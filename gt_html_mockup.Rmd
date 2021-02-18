@@ -1,0 +1,710 @@
+---
+title: "HTML in GT table - mtcars"
+author: "Andrew vanderWilden"
+date: "11/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+```{r}
+library(kableExtra)
+library(gt)
+library(sparkline)
+library(glue)
+library(espnscrapeR)
+library(tidyverse)
+```
+
+
+```{r}
+df <- mtcars
+```
+
+
+```{r}
+mpg_list <- split(df$mpg, df$cyl)
+
+mpg_list
+```
+
+```{r}
+# KableExtra for boxplot in table
+data.frame(
+  cyl = c(4,6,8),
+  boxplot = ''
+) %>%
+  kbl(booktabs = TRUE) %>%
+  kable_paper(full_width = FALSE) %>%
+  column_spec(2, image = spec_boxplot(mpg_list, width = 300, height = 70))
+```
+
+
+### NOTE: THIS ONLY WORKS WITH EXTERNAL OBJECT, NOT INFO IN DATAFRAME ITSELF
+
+```{r}
+# gt and KableExtra for sparklines
+
+mpg_range <- range(df$mpg)
+
+df %>%
+  group_by(cyl) %>%
+  summarise(data = list(mpg), .groups = 'drop') %>%
+  mutate(
+    # spec_plot creates plot in base R and returns as svg or pdf
+    plot = map(data, ~spec_plot(.x, ylim = mpg_range,
+                                same_lim = TRUE, width = 300, height = 70)),
+    plot = map(plot, 'svg_text'),
+    # need to let gt know to treat svg_text as html
+    plot = map(plot, gt::html)
+  ) %>%
+  select(-data) %>%
+  gt()
+```
+
+
+```{r}
+# Do it all in gt
+
+# custom function
+gt_plot <- function(table_data, column, plot_data, plot_fun, ...){
+  text_transform(
+    table_data,
+    # note the use of {{}} here - this is tidy eval
+    # that allows you to indicate specific columns
+    locations = cells_body(columns = vars({{column}})),
+    fn = function(x){
+      plot <- map(plot_data, plot_fun, width = 300, height = 70, same_lim = T, ...)
+      plot_svg <- map(plot, 'svg_text')
+      map(plot_svg, gt::html)
+    }
+  )
+}
+
+
+tibble(cyl = c(4,6,8), boxplot = '') %>%
+  gt() %>%
+  gt_plot(
+    column = boxplot, # column to create boxplot in
+    plot_data = mpg_list, # external data to reference
+    plot_fun = spec_boxplot, # which plot function
+    lim = mpg_range # range applied
+  )
+```
+
+
+
+```{r}
+# can quickly change to sparkline instead of boxplot
+
+tibble(cyl = c(4,6,8), sparkline = '') %>%
+  gt() %>%
+  gt_plot(
+    column = sparkline, # column to create plot in
+    plot_data = mpg_list, # external data to reference
+    plot_fun = spec_plot, # which plot function
+    lim = mpg_range, # range applied
+    col = 'black', # color of sparkline
+    cex = 8 # change size of points
+  )
+```
+
+
+```{r}
+# put all of them together
+
+#Note that we are just varying the ylim on the line/points 1 vs 2, where the
+#mpg_line1/mpg_points1 share a common y-axis, and line2/points2 have their own y-axis.
+
+tibble(
+  cyl = c(4,6,8),
+  boxplot = '',
+  mpg_hist = '',
+  mpg_line1 = '',
+  mpg_line2 = '',
+  mpg_points1 = '',
+  mpg_points2 = '',
+  mpg_poly = ''
+) %>%
+  gt() %>%
+  gt_plot(column = boxplot, plot_data = mpg_list,
+          plot_fun = spec_boxplot, lim = mpg_range) %>%
+  gt_plot(column = mpg_hist, plot_data = mpg_list,
+          plot_fun = spec_hist, lim = mpg_range) %>%
+  gt_plot(column = mpg_line1, plot_data = mpg_list,
+          plot_fun = spec_plot, ylim = mpg_range) %>%
+  gt_plot(column = mpg_line2, plot_data = mpg_list,
+          plot_fun = spec_plot) %>%
+  gt_plot(column = mpg_points1, plot_data = mpg_list,
+          plot_fun = spec_plot, type = 'p', ylim = mpg_range, cex = 4) %>%
+  gt_plot(column = mpg_points2, plot_data = mpg_list,
+          plot_fun = spec_plot, type = 'p', cex = 4) %>%
+  gt_plot(column = mpg_poly, plot_data = mpg_list,
+          plot_fun = spec_plot, polymin = 5, ylim = mpg_range)
+
+```
+
+
+### Use purrr::pluck() to reference actual dataframe
+
+```{r}
+
+df %>%
+  group_by(cyl) %>%
+  summarise(mpg_data = list(mpg), .groups = 'drop') %>%
+  gt() %>%
+  text_transform(
+    locations = cells_body(columns = vars(mpg_data)),
+    fn = function(x){
+      # _data is data in gt table, see str() of gt object
+      data_in = pluck(., '_data', 'mpg_data')
+      plot = map(data_in, ~spec_plot(.x, ylim = mpg_range, same_lim = T,
+                                     width = 300, height = 70))
+      plot = map_chr(plot, 'svg_text')
+    }
+  )
+
+```
+
+
+
+```{r}
+# alternative without going into gt object
+
+df %>%
+  group_by(cyl) %>%
+  summarise(mpg_data = list(as.double(mpg)), .groups = 'drop') %>%
+  gt() %>%
+  text_transform(
+    locations = cells_body(columns = vars(mpg_data)),
+    fn = function(x){
+      # split the strings at each comma
+      split_data <- str_split(x, ', ')
+      # convert to type double
+      data <- map(split_data, as.double)
+      # create the plot
+      plot <- map(data, ~spec_plot(.x, ylim = mpg_range, same_lim = T,
+                                   width = 300, height = 70))
+      # extract the svg item
+      map(plot, 'svg_text')
+    }
+  )
+
+```
+
+
+### Rewrite gt_plot() function so it works with a dataframe
+
+```{r}
+
+gt_plot <- function(table_data, plot_col, data_col, plot_fun, ...){
+  # save the data extract ahead of time
+  # to be used in our anonymous function below
+  data_in = pluck(table_data, '_data', data_col)
+  
+  text_transform(
+    table_data,
+    # not the use of {{}} here - this is tidy eval
+    # that allow you to indicate specific columns
+    locations = cells_body(columns = vars({{plot_col}})),
+    fn = function(x){
+      plot <- map(data_in, plot_fun, width = 300, height = 70, same_lim = F, ...)
+      plot_svg <- map(plot, 'svg_text')
+      map(plot_svg, gt::html)
+    }
+  )
+}
+```
+
+### Now it works with grouped list data columns
+
+```{r}
+df %>%
+  group_by(cyl) %>%
+  summarise(mpg_data = list(mpg), .groups = 'drop') %>%
+  gt() %>%
+  # note you can leave mpg_data unquoted for tidy eval
+  # but have to quote mpg_data for the pluck
+  gt_plot(mpg_data, 'mpg_data', plot_fun = spec_plot)
+
+```
+
+
+
+```{r, include=FALSE}
+sparkline::sparkline(0)
+```
+
+### Interactive sparkline with javascript
+
+```{r}
+
+tibble(
+  var = c("mpg", "wt"),
+  sparkline1 = "",
+  sparkline2 = "",
+  box = ""
+) %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(sparkline1)),
+    fn = function(x){
+      sparkline <- map(list(mtcars$mpg, mtcars$wt), ~spk_chr(values = .x, chartRangeMin = 0))
+      map(sparkline, gt::html)
+    }
+  ) %>% 
+  text_transform(
+    locations = cells_body(vars(sparkline2)),
+    fn = function(x){
+      sparkline <- map(list(mtcars$mpg, mtcars$wt), ~spk_chr(values = .x, type = "bar", chartRangeMin = 0))
+      map(sparkline, gt::html)
+    }
+  ) %>% 
+  text_transform(
+    locations = cells_body(vars(box)),
+    fn = function(x){
+      sparkline <- map(list(mtcars$mpg, mtcars$wt), ~spk_chr(values = .x, type = "box", chartRangeMin = 0))
+      map(sparkline, gt::html)
+    }
+  )
+```
+
+
+### Sparkline function for gt()
+
+```{r}
+gt_spark <- function(table_data, plot_col, data_col){
+  # save the data extract ahead of time 
+  # to be used in our anonymous function below
+  data_in = pluck(table_data, "_data", data_col)
+  
+  text_transform(
+    table_data,
+    # note use of {{}}, same as above for tidy eval
+    locations = cells_body(columns = vars({{plot_col}})),
+    fn = function(x){
+      sparkline_plot <- map(
+        data_in,
+        ~spk_chr(values = .x, chartRangeMin = 0)
+      )
+      
+      map(sparkline_plot, gt::html)
+    }
+  )
+}
+```
+
+
+```{r}
+# Apply sparkline function in gt table
+
+df %>%
+  group_by(cyl) %>%
+  summarise(mpg_data = list(mpg), .groups = 'drop') %>%
+  gt() %>%
+  gt_spark(mpg_data, 'mpg_data')
+```
+
+
+### gt Example with simulated data for medical trial
+
+```{r, echo = FALSE}
+coef_table <- tibble(
+  group = c(
+    "",
+    rep("Sex", 2),
+    rep("Age", 4),
+    rep("Body-Mass index", 2),
+    rep("Race", 3),
+    rep("Baseline statin treatment", 2),
+    rep("Intensity of statin treatment", 2),
+    rep("Metabolic disease", 3),
+    rep("Renal function", 3)
+  ),
+  subgroup = c(
+    "All Patients",
+    "Male", "Female",
+    "<65 yr", ">= 65 yr", "<75 yr", ">=75 yr",
+    "<=Median", ">Median",
+    "White", "Black", "Other",
+    "Yes", "No",
+    "High", "Not high",
+    "Diabetes", "Metabolic syndrome", "Neither",
+    "Normal", "Mild impairment", "Moderate impairment"
+  ),
+  Inclisiran = c(
+    781, 535,246,297,484,638,143,394,387,653,110,18,701,80,538,243,371,195,215,395,269,113
+  ),
+  Placebo = c(
+    780,548,232,333,447,649,131,385,394,685,87,8,692,88,546,234,331,207,242,410,260,107
+  ),
+  coefficients = c(-60,-55,-68,-58,-55,-57,-58,-55,-48,-58,-57,-49,-44,-58,-55,-57,-54,-52,-54,-53, -54,-52)
+  ) %>% 
+  mutate(
+    conf_range = runif(22, min = 5, max = 10),
+    conf_lower = coefficients - conf_range,
+    conf_higher = coefficients + conf_range
+  ) %>%
+  mutate(
+    image = spec_pointrange(
+      x = coefficients, 
+      xmin = conf_lower, 
+      xmax = conf_higher, 
+      same_lim = TRUE,
+      lim = c(-100, 25),
+      vline = 0,
+      width = 550,
+      cex = .75,
+      col = "black"
+      )
+    )
+```
+
+```{r}
+coef_table %>%
+  select(-coefficients, -contains('conf')) %>%
+  mutate(
+    image = map(image, 'svg_text'),
+    image = map(image, ~gt::html(as.character(.x)))
+  ) %>%
+  select(group:Placebo, pct_diff = image) %>%
+  gt(
+    groupname_col = 'group',
+    rowname_col = 'subgroup'
+  ) %>%
+  opt_row_striping() %>%
+  tab_options(
+    data_row.padding = px(3)
+  )
+```
+
+
+```{r, echo = FALSE}
+# Add tooltip to column labels
+library(htmltools)
+
+with_tooltip <- function(value, tooltip) {
+  tags$abbr(style = "text-decoration: underline; text-decoration-style: solid; cursor: question; color: blue",
+            title = tooltip, value)
+}
+```
+
+
+
+```{r, echo = FALSE}
+# creates a star rating 0-5
+
+rating_stars <- function(rating, max_rating = 5) {
+  rounded_rating <- floor(rating + 0.5)  # always round up
+  stars <- lapply(seq_len(max_rating), function(i) {
+    if (i <= rounded_rating) fontawesome::fa("star", fill= "orange") else fontawesome::fa("star", fill= "grey")
+  })
+  label <- sprintf("%s out of %s", rating, max_rating)
+  div_out <- div(title = label, "aria-label" = label, role = "img", stars)
+  
+  as.character(div_out) %>% 
+    gt::html()
+}
+```
+
+
+
+```{r,echo=FALSE}
+# fontawesome for inline icons
+
+rank_chg <- function(change_dir){
+  if (change_dir == "increase") {
+    logo_out <- fontawesome::fa("arrow-up", fill = "blue")
+  } else if (change_dir == "decrease"){
+    logo_out <- fontawesome::fa("arrow-down", fill = "red")
+  }
+  
+  logo_out %>% 
+    as.character() %>% 
+    gt::html()
+  
+}
+```
+
+
+
+```{r, echo = FALSE}
+# create badge style label with rounded edges and specific color
+
+add_cyl_color <- function(cyl){
+      add_color <- if (cyl == 4) {
+        "background: hsl(116, 60%, 90%); color: hsl(116, 30%, 25%);"
+      } else if (cyl == 6) {
+        "background: hsl(230, 70%, 90%); color: hsl(230, 45%, 30%);"
+      } else if (cyl == 8) {
+        "background: hsl(350, 70%, 90%); color: hsl(350, 45%, 30%);"
+      }
+      div_out <- htmltools::div(
+        style = paste(
+          "display: inline-block; padding: 2px 12px; border-radius: 15px; font-weight: 600; font-size: 12px;",
+          add_color
+          ),
+        paste(cyl, "Cylinders")
+      )
+      
+      as.character(div_out) %>% 
+        gt::html()
+}
+```
+
+
+```{r, echo = FALSE}
+# inline barchart
+
+bar_chart <- function(value, color = "red"){
+    
+    glue::glue("<span style=\"display: inline-block; direction: ltr; border-radius: 4px; padding-right: 2px; background-color: {color}; color: {color}; width: {value}%\"> &nbsp; </span>") %>% 
+    as.character() %>% 
+    gt::html()
+}
+```
+
+
+
+
+
+
+### Final mtcars table
+
+```{r}
+set.seed(377)
+
+df %>%
+  tibble() %>%
+  select(1:4) %>%
+  sample_n(size = 6) %>%
+  mutate(
+    rank_change = sample(c('increase', 'decrease'), size = 6, replace = T),
+    rank_change = map(rank_change, rank_chg)
+  ) %>%
+  mutate(
+    rating = sample(1:5, size = 6, replace = T),
+    rating = map(rating, rating_stars)
+  ) %>%
+  mutate(
+    cylinder = map(cyl, add_cyl_color)
+  ) %>%
+  mutate(
+    mpg_plot = mpg/max(mpg) * 100,
+    mpg_plot = map(mpg_plot, ~bar_chart(value = .x, color = 'lightblue'))
+  ) %>%
+  gt() %>%
+  cols_align(
+    align = 'left',
+    columns = vars(mpg_plot)
+  ) %>%
+  cols_label(
+    mpg = gt::html(as.character(with_tooltip('MPG', 'Miles per Gallon')))
+  ) %>%
+  tab_source_note(
+    source_note = html(
+      htmltools::tags$a(
+        href = 'https://gt.rstudio.com/reference/md.html',
+        target = '_blank',
+        'Data Source'
+      ) %>%
+        as.character()
+    )
+  ) %>%
+  tab_source_note(
+    source_note = html(
+      "<details><h3 style='font-face:bold'>Table Key</h3><div>MPG: Miles Per Gallon</div><div>Cyl: Cylinders</div><div>disp: Displacement</div><div>hp: Horsepower</div><div>rank_change: Rank Change</div><div>rating: Rating</div></details>"
+
+    )
+  ) %>%
+  tab_options(
+    data_row.padding = px(5)
+  )
+```
+
+
+
+# Second Example with NFL QBs
+  
+```{r}
+# use espnscrapeR to get NFL standings + QBR ratings
+nfl_qbr <- get_nfl_qbr(2020)
+nfl_standings <- get_nfl_standings(2020)
+
+# also get weekly for embedded plot
+qbr_weekly <- crossing(season = 2020, week = 1:8) %>%
+  pmap_dfr(.f = get_nfl_qbr)
+```
+
+
+```{r}
+# Data prep
+
+qbr_match <- qbr_weekly %>%
+  filter(short_name %in% nfl_qbr$short_name) %>%
+  group_by(short_name, team) %>%
+  summarise(qbr_weekly = list(qbr_total), .groups = "drop",
+            qbr = mean(qbr_total),
+            qbr_sd = sd(qbr_total),
+            plays = sum(qb_plays),
+            pass = mean(pass),
+            run = mean(run),
+            head = unique(headshot_href),
+            n = n()) %>%
+  arrange(desc(qbr)) %>% 
+  filter(n >= 7)
+
+# clean up the data a bit and combine
+tab_df <- qbr_match %>% 
+  left_join(nfl_standings, by = c("team" = "abb_name")) %>%
+  select(short_name, team, head, qbr_weekly:run, wins, losses, points_for) %>%
+  mutate(wl = glue("{wins}-{losses}")) %>%
+  select(-wins, -losses)
+tab_df
+```
+
+```{r}
+# calc rank change
+qbr_rnk_chg <- qbr_weekly %>% 
+  mutate(game_week = as.integer(game_week)) %>% 
+  group_by(short_name) %>% 
+  mutate(mean_qbr = mean(qbr_total)) %>% 
+  ungroup() %>% 
+  select(game_week, rank, short_name, qbr_total, mean_qbr) %>% 
+  filter(game_week != max(game_week)) %>% 
+  filter(short_name %in% nfl_qbr$short_name) %>%
+  group_by(short_name) %>%
+  summarize(prev_qbr = mean(qbr_total), mean_qbr = unique(mean_qbr)) %>% 
+  mutate(
+    prev_week = rank(-prev_qbr),
+    rank = rank(-mean_qbr)
+    ) %>% 
+  mutate(rank_chg = prev_week-rank) %>% 
+  ungroup() %>% 
+  arrange(desc(mean_qbr)) %>% 
+  select(short_name, qbr = mean_qbr, rank_chg, rank)
+
+qbr_rnk_chg
+
+```
+
+```{r}
+# Code for name, team, record combo
+
+combine_word <- function(name, team, wl){
+      glue::glue(
+        "<div style='line-height:10px'><span style='font-weight:bold;font-variant:small-caps;font-size:14px'>{name}</div>
+        <div style='line-height:12px'><span style ='font-weight:bold;color:grey;font-size:10px'>{team}&nbsp;&nbsp;{wl}</span></div>"
+      )
+    }
+
+combo_df <- tab_df %>% 
+  left_join(qbr_rnk_chg, by = c("short_name", "qbr")) %>%
+  select(rank, rank_chg, short_name:wl) %>% 
+  mutate(
+    rank = row_number(),
+    combo = combine_word(short_name, team, wl),
+    combo = map(combo, gt::html)
+    ) %>% 
+  select(rank, rank_chg, head, combo, qbr, qbr_weekly, plays, points_for)
+
+
+
+```
+
+
+```{r}
+final_table <- combo_df %>%
+  gt() %>%
+  cols_align(
+    align = 'left',
+    columns = vars(combo)
+  ) %>%
+  tab_options(
+    data_row.padding = px(2)
+  ) %>%
+  text_transform(
+    locations = cells_body(columns = vars(head)),
+    fn = function(x){
+      gt::web_image(x)
+    }
+  ) %>%
+    text_transform(
+    locations = cells_body(columns = vars(rank_chg)),
+    fn = function(x){
+      
+      rank_chg <- as.integer(x)
+      
+      choose_logo <-function(x){
+        if (x == 0){
+        gt::html(fontawesome::fa("equals", fill = "grey"))
+      } else if (x > 0){
+         gt::html(glue::glue("<span style='color:#1134A6;font-face:bold;font-size:10px;'>{x}</span>"), fontawesome::fa("arrow-up", fill = "#1134A6"))
+      } else if (x < 0) {
+        gt::html(glue::glue("<span style='color:#DA2A2A;font-face:bold;font-size:10px;'>{x}</span>"), fontawesome::fa("arrow-down", fill = "#DA2A2A"))
+      }
+      } 
+      
+      map(rank_chg, choose_logo)
+    
+    }
+  ) %>% 
+  fmt_number(
+    columns = vars(qbr), 
+    decimals = 1
+    ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(TRUE)
+  ) %>% 
+  cols_label(
+    rank = "RK",
+    combo = "",
+    head = "QB",
+    qbr = "QBR",
+    plays = "PLAYS",
+    points_for = "PF",
+    qbr_weekly = "WEEKLY",
+    rank_chg = ""
+  ) %>% 
+  gt_spark(qbr_weekly, "qbr_weekly") %>%
+  espnscrapeR::gt_theme_espn() %>% 
+  tab_source_note(
+    source_note = gt::html(
+      htmltools::tags$a(
+        href = "https://www.espn.com/nfl/qbr", 
+        target = "_blank", 
+        "Data: ESPN"
+        ) %>% 
+        as.character()
+      )
+    ) %>% 
+  cols_align(
+    "left",
+    columns = vars(qbr_weekly)
+  ) %>% 
+  cols_width(
+    vars(rank) ~ px(25),
+    vars(rank_chg) ~ px(35),
+    vars(head) ~ px(50),
+    vars(combo) ~ px(115),
+    vars(qbr) ~ px(35),
+    vars(plays) ~ px(50),
+    vars(points_for) ~ px(35),
+    vars(qbr_weekly) ~ px(75)
+  ) %>% 
+  tab_header(
+    title = gt::html("<h3>NFL QBR through Week 8</h3>")
+  ) %>% 
+  tab_options(
+    table.width = px(480),
+    data_row.padding = px(4)
+  )
+final_table
+```
+
+
+
